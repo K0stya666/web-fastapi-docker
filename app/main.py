@@ -2,6 +2,9 @@ import os
 import requests
 from fastapi import HTTPException
 from fastapi import FastAPI, Depends, HTTPException
+from app.tasks import parse_url_task
+from celery.result import AsyncResult
+from fastapi import BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List
 from datetime import datetime, timedelta
@@ -286,3 +289,44 @@ def parse_url(
 
     # Если всё ок, возвращаем JSON, который вернул парсер
     return response.json()
+
+class AsyncParseResponse(BaseModel):
+    task_id: str
+    status: str
+
+@app.post("/parse-async", response_model=AsyncParseResponse)
+def parse_url_async(
+    req: ParseRequest,
+    current_user: UserProfile = Depends(get_current_user)
+):
+    """
+    Принимает JSON {"url": "..."}, создаёт Celery-задачу parse_url_task.delay(url)
+    и возвращает ID этой задачи, чтобы клиент мог отслеживать прогресс.
+    """
+    task = parse_url_task.delay(str(req.url))
+    return {"task_id": task.id, "status": "queued"}
+
+class TaskStatusResponse(BaseModel):
+    task_id: str
+    status: str
+    result: dict | None = None
+    error: str | None = None
+
+@app.get("/task-status/{task_id}", response_model=TaskStatusResponse)
+def get_task_status(task_id: str):
+    """
+    Возвращает текущий статус Celery-задачи (PENDING, SUCCESS, FAILURE и т.д.),
+    а также результат, если задача завершена.
+    """
+    res = AsyncResult(task_id, app=parse_url_task.app)  # или celery_app.celery
+    state = res.state
+    response = {"task_id": task_id, "status": state, "result": None, "error": None}
+
+    if state == "SUCCESS":
+        # Результат – это JSON, который вернул парсер
+        response["result"] = res.result
+    elif state == "FAILURE":
+        # Собираем информацию об ошибке
+        response["error"] = str(res.result)
+    # В других состояниях (PENDING, STARTED, RETRY) результата нет
+    return response

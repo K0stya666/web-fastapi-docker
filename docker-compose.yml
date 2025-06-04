@@ -1,3 +1,5 @@
+version: "3.9"
+
 services:
   db:
     image: postgres:15
@@ -23,14 +25,17 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_started
     ports:
       - "8000:8000"
     environment:
       SECRET_KEY: ${SECRET_KEY}
       DB_ADMIN: "postgresql://postgres:admin@db:5432/trip_db"
-      # ВАЖНО: переопределяем PARSER_URL для web-контейнера,
-      # чтобы он обращался не к localhost:8001, а к сервису parser
       PARSER_URL: "http://parser:8001/parse"
+
+      REDIS_BROKER_URL: "redis://redis:6379/0"
+      CELERY_RESULT_BACKEND: "redis://redis:6379/1"
     volumes:
       - .:/app
 
@@ -47,6 +52,32 @@ services:
       DB_ADMIN: "postgresql://postgres:admin@db:5432/trip_db"
     volumes:
       - ./parser:/app
+
+  redis:
+    image: redis:7-alpine
+    restart: always
+    ports:
+      - "6379:6379"
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: >
+      celery -A app.celery_app.celery worker 
+      --loglevel=info 
+      --concurrency=1
+    depends_on:
+      web:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_BROKER_URL: "redis://redis:6379/0"
+      CELERY_RESULT_BACKEND: "redis://redis:6379/1"
+      PARSER_URL: "http://parser:8001/parse"
+    volumes:
+      - .:/app
 
 volumes:
   db_data:
